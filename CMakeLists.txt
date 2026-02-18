@@ -13,6 +13,7 @@ find_package(SDL2 REQUIRED)
 set(SOURCES
     src/main.cpp
     src/render/Renderer.cpp
+    src/render/UI.cpp
     src/game/World.cpp
     src/game/Guest.cpp
     src/game/Pathfinder.cpp

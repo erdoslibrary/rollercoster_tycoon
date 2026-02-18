@@ -2,9 +2,9 @@
 #define RCT_WORLD_HPP
 
 #include <vector>
+#include <string>
 #include "Tile.hpp"
 #include "render/Renderer.hpp"
-
 #include "render/Camera.hpp"
 
 namespace rct {
@@ -27,8 +27,15 @@ public:
     
     // Grid to Screen conversion with rotation
     void gridToScreen(int tx, int ty, int th, int& sx, int& sy, const Camera& cam) const;
+    
+    // Screen to Grid conversion (Mouse picking)
+    bool screenToGrid(int sx, int sy, const Camera& cam, int& tx, int& ty) const;
 
-    void render(Renderer& renderer, const Camera& cam) const;
+    // Save / Load
+    bool save(const std::string& filename) const;
+    bool load(const std::string& filename);
+
+    void render(Renderer& renderer, const Camera& cam, int hoverX = -1, int hoverY = -1) const;
 
     int getWidth() const { return width; }
     int getHeight() const { return height; }
