@@ -4,6 +4,10 @@
 #include <memory>
 #include <ctime>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #include "render/Renderer.hpp"
 #include "render/UI.hpp"
 #include "render/Sprite.hpp"
@@ -15,6 +19,25 @@
 #include "game/Track.hpp"
 #include "game/Train.hpp"
 #include "common/SoundManager.hpp"
+
+// AppContext to hold all game state for the main loop
+struct AppContext {
+    bool quit;
+    SDL_Window* window;
+    rct::Renderer* renderer;
+    rct::World* world;
+    rct::Camera* cam;
+    rct::Economy* economy;
+    rct::Scenario* scenario;
+    rct::UIManager* uiManager;
+    rct::ScenarioWindow* scenarioWin;
+    rct::Train* train;
+    rct::Ride* rollerCoaster;
+    std::shared_ptr<rct::Sprite> guestSprite;
+    std::vector<std::unique_ptr<rct::Guest>> guests;
+    bool rightMouseDown;
+    int prevMx, prevMy;
+};
 
 // Helper to create a guest sprite
 std::shared_ptr<rct::Sprite> createGuestSprite() {
@@ -28,123 +51,145 @@ std::shared_ptr<rct::Sprite> createGuestSprite() {
     return s;
 }
 
+// Main Loop Function (Called every frame)
+void main_loop(void* arg) {
+    AppContext* ctx = static_cast<AppContext*>(arg);
+    SDL_Event e;
+    int mx, my;
+    uint32_t mouseState = SDL_GetMouseState(&mx, &my);
+    bool leftMouseDown = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT));
+    
+    // Calculate mouse delta CORRECTLY
+    int deltaX = mx - ctx->prevMx; 
+    int deltaY = my - ctx->prevMy;
+    ctx->prevMx = mx; 
+    ctx->prevMy = my;
+
+    // Get Hovered Tile (using separate local variables to avoid overwriting prevMx/prevMy)
+    int hX, hY;
+    ctx->world->screenToGrid(mx, my, *ctx->cam, hX, hY);
+
+    while (SDL_PollEvent(&e) != 0) {
+        if (e.type == SDL_QUIT) ctx->quit = true;
+        
+        if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) ctx->rightMouseDown = true;
+        if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) ctx->rightMouseDown = false;
+        
+        if (e.type == SDL_KEYDOWN) {
+            switch (e.key.keysym.sym) {
+                case SDLK_UP:    ctx->cam->y += 20; break;
+                case SDLK_DOWN:  ctx->cam->y -= 20; break;
+                case SDLK_LEFT:  ctx->cam->x += 20; break;
+                case SDLK_RIGHT: ctx->cam->x -= 20; break;
+                case SDLK_r: ctx->cam->rotateClockwise(); break;
+                case SDLK_l: ctx->cam->rotateCounterClockwise(); break;
+                case SDLK_EQUALS: ctx->cam->adjustZoom(0.1f); break;
+                case SDLK_MINUS:  ctx->cam->adjustZoom(-0.1f); break;
+                case SDLK_s: ctx->world->save("savegame.dat"); break;
+                case SDLK_o: ctx->world->load("savegame.dat"); break;
+                case SDLK_ESCAPE: ctx->quit = true; break;
+            }
+        }
+
+        if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+            // Check if UI handled the click first (Simplified: check if mouse is not over a window)
+            // (In a real UI system, handleInput would return a bool to block this)
+            if (hX != -1 && hY != -1) {
+                const uint8_t* keys = SDL_GetKeyboardState(nullptr);
+                if (keys[SDL_SCANCODE_LSHIFT]) {
+                    ctx->world->getTile(hX, hY).baseHeight++;
+                } else {
+                    ctx->guests.emplace_back(new rct::Guest(ctx->guests.size(), hX, hY, ctx->guestSprite));
+                    ctx->economy->addIncome(1000);
+                }
+            }
+        }
+    }
+
+    // Logic Update
+    ctx->uiManager->handleInput(mx, my, leftMouseDown, deltaX, deltaY);
+    
+    // Camera Drag Logic (Only if not clicking on UI - simplified)
+    if (ctx->rightMouseDown) { 
+        ctx->cam->x += deltaX; 
+        ctx->cam->y += deltaY; 
+    }
+    
+    for (auto& g : ctx->guests) g->update();
+    ctx->train->update();
+    ctx->scenario->checkVictory(ctx->guests.size(), ctx->economy->getBalance());
+    ctx->scenarioWin->updateProgress(ctx->guests.size());
+
+    // Render
+    ctx->renderer->clear(0);
+    ctx->world->render(*ctx->renderer, *ctx->cam, hX, hY);
+    ctx->rollerCoaster->render(*ctx->renderer, *ctx->world, *ctx->cam);
+    ctx->train->render(*ctx->renderer, *ctx->world, *ctx->cam);
+    for (auto& g : ctx->guests) g->renderAt(*ctx->renderer, *ctx->world, *ctx->cam);
+    ctx->uiManager->render(*ctx->renderer);
+    ctx->renderer->present();
+}
+
 int main(int argc, char* argv[]) {
     std::srand(static_cast<unsigned>(std::time(nullptr)));
     if (SDL_Init(SDL_INIT_VIDEO) < 0) return 1;
 
+    AppContext ctx;
+    ctx.quit = false;
     int sw = 800, sh = 600;
-    SDL_Window* window = SDL_CreateWindow("RCT Native - Full Integration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, sw, sh, SDL_WINDOW_SHOWN);
+    ctx.window = SDL_CreateWindow("RCT Native - Full Roadmap Integration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, sw, sh, SDL_WINDOW_SHOWN);
     
-    rct::Renderer renderer(window, sw, sh);
-    renderer.setPaletteColor(7, 50, 50, 50);   // UI Title
-    renderer.setPaletteColor(8, 180, 180, 180); // UI Body
-    renderer.setPaletteColor(200, 255, 100, 200); // Guest Pink
-    renderer.setPaletteColor(40, 255, 255, 0);   // Train Yellow
+    ctx.renderer = new rct::Renderer(ctx.window, sw, sh);
+    ctx.renderer->setPaletteColor(7, 50, 50, 50);   
+    ctx.renderer->setPaletteColor(8, 180, 180, 180); 
+    ctx.renderer->setPaletteColor(200, 255, 100, 200); 
+    ctx.renderer->setPaletteColor(40, 255, 255, 0);   
+    ctx.renderer->setPaletteColor(1, 200, 0, 0); 
+    ctx.renderer->setPaletteColor(2, 0, 200, 0); 
 
-    rct::World world(32, 32);
-    rct::Camera cam;
-    cam.x = 400; cam.y = 100;
+    ctx.world = new rct::World(32, 32);
+    ctx.cam = new rct::Camera();
+    ctx.cam->x = 400; ctx.cam->y = 100;
+    ctx.economy = new rct::Economy(100000);
+    ctx.scenario = new rct::Scenario("Forest Frontiers", rct::ScenarioGoal(30, 200000, 10000));
     
-    rct::Economy economy(100000); // $1,000.00
-    rct::Scenario scenario("Forest Frontiers", rct::ScenarioGoal(30, 200000, 10000));
+    ctx.uiManager = new rct::UIManager();
+    ctx.scenarioWin = new rct::ScenarioWindow(ctx.scenario, 550, 350, 200, 100);
+    ctx.uiManager->addWindow(new rct::ParkInfoWindow(ctx.economy, 50, 50, 200, 150));
+    ctx.uiManager->addWindow(ctx.scenarioWin);
+
+    ctx.guestSprite = createGuestSprite();
+    ctx.rollerCoaster = new rct::Ride();
+    // Create track circuit
+    for (int i = 5; i < 12; ++i) ctx.rollerCoaster->addSegment(rct::TrackSegment(i, 8, 2, rct::TrackType::STRAIGHT, rct::Direction::EAST));
+    ctx.rollerCoaster->addSegment(rct::TrackSegment(12, 8, 2, rct::TrackType::SLOPE_UP, rct::Direction::EAST));
+    ctx.rollerCoaster->addSegment(rct::TrackSegment(13, 8, 3, rct::TrackType::SLOPE_DOWN, rct::Direction::EAST));
+    for (int i = 14; i >= 5; --i) ctx.rollerCoaster->addSegment(rct::TrackSegment(i, 9, 2, rct::TrackType::STRAIGHT, rct::Direction::WEST));
     
-    rct::UIManager uiManager;
-    auto* scenarioWin = new rct::ScenarioWindow(&scenario, 550, 350, 200, 100);
-    uiManager.addWindow(new rct::ParkInfoWindow(&economy, 50, 50, 200, 150));
-    uiManager.addWindow(scenarioWin);
-
-    auto guestSprite = createGuestSprite();
-    std::vector<std::unique_ptr<rct::Guest>> guests;
-
-    // Create a simple track circuit
-    rct::Ride rollerCoaster;
-    for (int i = 5; i < 12; ++i) rollerCoaster.addSegment(rct::TrackSegment(i, 8, 2, rct::TrackType::STRAIGHT, rct::Direction::EAST));
-    rollerCoaster.addSegment(rct::TrackSegment(12, 8, 2, rct::TrackType::SLOPE_UP, rct::Direction::EAST));
-    rollerCoaster.addSegment(rct::TrackSegment(13, 8, 3, rct::TrackType::SLOPE_DOWN, rct::Direction::EAST));
-    for (int i = 14; i >= 5; --i) rollerCoaster.addSegment(rct::TrackSegment(i, 9, 2, rct::TrackType::STRAIGHT, rct::Direction::WEST));
+    ctx.train = new rct::Train(ctx.rollerCoaster->getSegments());
+    ctx.rightMouseDown = false;
     
-    rct::Train train(rollerCoaster.getSegments());
+    // Initial mouse state
+    SDL_GetMouseState(&ctx.prevMx, &ctx.prevMy);
 
-    bool quit = false;
-    SDL_Event e;
-    bool rightMouseDown = false;
-    int prevMx = 0, prevMy = 0;
-    int hX = -1, hY = -1;
-
-    while (!quit) {
-        int mx, my;
-        uint32_t mouseState = SDL_GetMouseState(&mx, &my);
-        bool leftMouseDown = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT));
-        int deltaX = mx - prevMx; int deltaY = my - prevMy;
-        prevMx = mx; prevMy = my;
-
-        world.screenToGrid(mx, my, cam, hX, hY);
-
-        while (SDL_PollEvent(&e) != 0) {
-            if (e.type == SDL_QUIT) quit = true;
-            
-            // Camera Controls
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) rightMouseDown = true;
-            if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) rightMouseDown = false;
-            
-            if (e.type == SDL_KEYDOWN) {
-                switch (e.key.keysym.sym) {
-                    case SDLK_UP:    cam.y += 20; break;
-                    case SDLK_DOWN:  cam.y -= 20; break;
-                    case SDLK_LEFT:  cam.x += 20; break;
-                    case SDLK_RIGHT: cam.x -= 20; break;
-                    case SDLK_r: cam.rotateClockwise(); break;
-                    case SDLK_l: cam.rotateCounterClockwise(); break;
-                    case SDLK_EQUALS: cam.adjustZoom(0.1f); break;
-                    case SDLK_MINUS:  cam.adjustZoom(-0.1f); break;
-                    case SDLK_s: world.save("savegame.dat"); break;
-                    case SDLK_o: world.load("savegame.dat"); break;
-                    case SDLK_ESCAPE: quit = true; break;
-                }
-            }
-
-            // Terrain / Guest Spawning
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                if (hX != -1 && hY != -1) {
-                    // Check if Shift is held for terrain height
-                    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
-                    if (keys[SDL_SCANCODE_LSHIFT]) {
-                        world.getTile(hX, hY).baseHeight++;
-                    } else {
-                        // Spawn Guest
-                        guests.emplace_back(new rct::Guest(guests.size(), hX, hY, guestSprite));
-                        economy.addIncome(1000); // $10 Entry fee
-                    }
-                }
-            }
-        }
-
-        // --- Logic Update ---
-        uiManager.handleInput(mx, my, leftMouseDown, deltaX, deltaY);
-        if (rightMouseDown) { cam.x += deltaX; cam.y += deltaY; }
-
-        for (auto& g : guests) g->update();
-        train.update();
-
-        scenario.checkVictory(guests.size(), economy.getBalance());
-        scenarioWin->updateProgress(guests.size());
-
-        // --- Render ---
-        renderer.clear(0);
-        world.render(renderer, cam, hX, hY);
-        
-        rollerCoaster.render(renderer, world, cam);
-        train.render(renderer, world, cam);
-
-        for (auto& g : guests) g->renderAt(renderer, world, cam);
-        
-        uiManager.render(renderer);
-        renderer.present();
-        
+#ifdef __EMSCRIPTEN__
+    emscripten_set_main_loop_arg(main_loop, &ctx, 0, 1);
+#else
+    while (!ctx.quit) {
+        main_loop(&ctx);
         SDL_Delay(16);
     }
+#endif
 
-    SDL_DestroyWindow(window);
+    delete ctx.train;
+    delete ctx.rollerCoaster;
+    delete ctx.uiManager;
+    delete ctx.economy;
+    delete ctx.scenario;
+    delete ctx.cam;
+    delete ctx.world;
+    delete ctx.renderer;
+    SDL_DestroyWindow(ctx.window);
     SDL_Quit();
     return 0;
 }

@@ -1,0 +1,45 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ] # main 브랜치에 푸시될 때마다 실행
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Emscripten
+      uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: latest
+
+    - name: Verify Emscripten
+      run: emcc -v
+
+    - name: Build WebAssembly
+      run: |
+        # 모든 소스 파일을 포함하여 컴파일 수행
+        # -s USE_SDL=2: SDL2 라이브러리 자동 포함
+        # -O3: 코드 최적화 (성능 향상)
+        emcc src/main.cpp src/render/*.cpp src/game/*.cpp 
+          -Isrc 
+          -s USE_SDL=2 
+          -s WASM=1 
+          -s ALLOW_MEMORY_GROWTH=1 
+          -O3 
+          -o index.html
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./
+        publish_branch: gh-pages # 빌드 결과물을 gh-pages 브랜치에 저장
+        # 배포할 파일들만 선택
+        publish_files: index.html,index.js,index.wasm
