@@ -1,5 +1,10 @@
 # RollerCoaster Tycoon Native Clone (RCT-Native)
 
+<img width="950" height="682" alt="image" src="https://github.com/user-attachments/assets/b494705a-7390-43e5-8571-c2d1c340cdd0" />
+
+https://erdoslibrary.github.io/rollercoster_tycoon/
+(2026.3.1)
+
 이 프로젝트는 크리스 소이어의 롤러코스터 타이쿤(RCT)을 현대적인 C++11 환경에서 구현한 **네이티브 데스크톱 시뮬레이션 게임**입니다. 
 원작의 고성능 시뮬레이션 철학을 계승하여 GPU 가속 대신 **CPU 기반 소프트웨어 렌더링**과 **고정 소수점 연산**을 사용합니다.
 
